@@ -1,0 +1,17 @@
+[
+  {
+    "id": 1,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        { "header": "Referer", "operation": "set", "value": "https://finance.sina.com.cn/" },
+        { "header": "Origin", "operation": "remove" }
+      ]
+    },
+    "condition": {
+      "requestDomains": ["hq.sinajs.cn"],
+      "resourceTypes": ["xmlhttprequest"]
+    }
+  }
+]

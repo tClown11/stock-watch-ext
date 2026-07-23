@@ -1,0 +1,23 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+release/
+*.crx
+
+# Signing key — NEVER commit
+release-key.pem
+*.pem
+
+# Design scratch / mockups
+*.dc.html
+
+# E2E runtime artifacts (contains local browser profile & personal config)
+e2e/.profile*/
+e2e/artifacts/
+e2e/shots/
+
+# Logs & OS junk
+*.log
+.DS_Store

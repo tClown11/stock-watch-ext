@@ -1,0 +1,45 @@
+{
+  "manifest_version": 3,
+  "name": "盯盘助手",
+  "version": "1.1.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAqPTt9GiLiCKNiaRdLXE90eUpxW2ghVL/RIUwwM+zqXx9YtOL0VHoz4wFSUu50oAIn/8ebuOXQvXuYKDs8lYj2Rw/fSUDDpQaxYYeCYl1KUjEO8GHnJoCPk6UfdjVkZ/AKl47fK0kFYfEJEKLOKQ7MBBUfyA2wcPEGeEqbWbwZSUG+lqyhC6rgcrIR/bbJ2C9tLpolsg45RiX/tzGkIBfsw666sMbGYNLD0SuU0B2VxT7k+E6bKeqOTJTmDwrVCG76HNgbSmE2jjzH5LHB8qeE64rHKIZ+ysw7QOWBNJUy3GnZphSs+4dwXTW/IQSwEmg+koJsaUMi7wOBvKe6BbgFwIDAQAB",
+  "description": "实时行情盯盘 · 自选 / 持仓盈亏 / 到价提醒（腾讯 · 新浪 · 东方财富多源行情）",
+  "action": {
+    "default_title": "盯盘助手",
+    "default_popup": "popup.html"
+  },
+  "side_panel": {
+    "default_path": "popup.html?ctx=side"
+  },
+  "background": {
+    "service_worker": "service-worker.js",
+    "type": "module"
+  },
+  "permissions": [
+    "storage",
+    "alarms",
+    "notifications",
+    "sidePanel",
+    "declarativeNetRequest"
+  ],
+  "host_permissions": [
+    "https://qt.gtimg.cn/*",
+    "https://web.ifzq.gtimg.cn/*",
+    "https://smartbox.gtimg.cn/*",
+    "https://hq.sinajs.cn/*",
+    "https://push2.eastmoney.com/*",
+    "https://push2his.eastmoney.com/*",
+    "https://searchapi.eastmoney.com/*",
+    "https://fundmobapi.eastmoney.com/*",
+    "https://news.10jqka.com.cn/*"
+  ],
+  "declarative_net_request": {
+    "rule_resources": [
+      {
+        "id": "sina_referer",
+        "enabled": true,
+        "path": "dnr_rules.json"
+      }
+    ]
+  }
+}
