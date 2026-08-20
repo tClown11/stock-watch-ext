@@ -1,11 +1,22 @@
 import type { Quote, Holding, Trends, WatchItem, Market } from '../data/types';
-import { fmt, sgn, decimalsFor, volWan, yi, pct } from './format';
+import { fmt, sgn, decimalsFor, decimalsForCrypto, volWan, yi, pct } from './format';
+
+/** 列表 / 详情共用的价格小数位（场外基金看净值、币圈按币价数量级）。 */
+export function priceDecimals(q: Quote | undefined, fallback = 2): number {
+  if (!q) return fallback;
+  if (q.otc) return 4;
+  if (q.market === 'CRYPTO') return decimalsForCrypto(q.price);
+  return decimalsFor(q.price);
+}
 
 // ── 市场交易时段与列表显示顺序（弹窗列表与工具栏角标共用，保证两边一致）────────
-/** A股/港/美 当前是否盘中（北京时间；美股取 CN 时间窗 ≈ 21:30–04:00）。 */
-export function marketSessionOpen(m: 'A' | 'HK' | 'US', now = new Date()): boolean {
+export type SessionMarket = 'A' | 'HK' | 'US' | 'CRYPTO';
+
+/** A股/港/美 当前是否盘中（北京时间；美股取 CN 时间窗 ≈ 21:30–04:00）。币圈 7×24 恒开。 */
+export function marketSessionOpen(m: SessionMarket, now = new Date()): boolean {
   const day = now.getDay();
   const mins = now.getHours() * 60 + now.getMinutes();
+  if (m === 'CRYPTO') return true; // 加密货币无休市，永远盘中
   if (m === 'US') {
     const inWindow = mins >= 21 * 60 + 30 || mins <= 4 * 60;
     const sessionDay = mins <= 4 * 60 ? (day + 6) % 7 : day; // 凌晨段归前一交易日
@@ -16,13 +27,13 @@ export function marketSessionOpen(m: 'A' | 'HK' | 'US', now = new Date()): boole
   return (mins >= 570 && mins <= 690) || (mins >= 780 && mins <= 900); // A: 9:30-11:30, 13:00-15:00
 }
 
-export const sessionOf = (m: Market): 'A' | 'HK' | 'US' => (m === 'SH' || m === 'SZ' ? 'A' : m);
+export const sessionOf = (m: Market): SessionMarket => (m === 'SH' || m === 'SZ' ? 'A' : m);
 
 /**
  * 显示顺序：收藏 → (置顶 → 普通 → 置底) → 开盘中的市场靠前 → 原序。
  * 角标的「第一只」也按此顺序取，与用户在列表里看到的第一行一致。
  */
-export function displaySort(watchlist: WatchItem[], isOpen: (m: 'A' | 'HK' | 'US') => boolean): WatchItem[] {
+export function displaySort(watchlist: WatchItem[], isOpen: (m: SessionMarket) => boolean): WatchItem[] {
   const posRank = (w: WatchItem) => (w.pinned ? 0 : w.pinnedBottom ? 2 : 1);
   const openRank = (w: WatchItem) => (isOpen(sessionOf(w.market)) ? 0 : 1);
   return watchlist
@@ -124,9 +135,25 @@ export interface Metric {
 }
 
 export function metricsFor(q: Quote, up: string, down: string): Metric[] {
-  const d = decimalsFor(q.price);
+  const d = priceDecimals(q);
   const neutral = 'var(--fg)';
   const isCN = q.market === 'SH' || q.market === 'SZ';
+  if (q.market === 'CRYPTO') {
+    // 币圈没有开收盘，全行业按「滚动 24 小时」看盘：昨收 → 24h 前价，
+    // 今开/最高/最低 → 24h 开/高/低；市盈率、换手、市值等股票指标不适用。
+    const open = q.open ?? q.prevClose;
+    return [
+      { label: '24h开', value: fmt(open, d), color: open >= q.prevClose ? up : down },
+      { label: '24h最高', value: fmt(q.high ?? NaN, d), color: up },
+      { label: '24h最低', value: fmt(q.low ?? NaN, d), color: down },
+      { label: '24h前价', value: fmt(q.prevClose, d), color: neutral },
+      { label: '24h均价', value: q.vwap != null ? fmt(q.vwap, d) : '—', color: neutral },
+      { label: '振幅', value: pct(q.amplitude), color: neutral },
+      { label: `24h成交量`, value: q.volume != null ? `${fmt(q.volume, 0)} ${q.code}` : '—', color: neutral },
+      { label: '24h成交额', value: q.amount != null ? yi(q.amount) : '—', color: neutral },
+      { label: '计价单位', value: 'USDT', color: neutral },
+    ];
+  }
   if (q.otc) {
     // 场外基金：无盘口指标，展示净值信息
     const c = q.changePct >= 0 ? up : down;

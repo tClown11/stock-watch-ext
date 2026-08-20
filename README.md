@@ -1,17 +1,18 @@
 # 盯盘助手 · Chrome MV3 实时行情盯盘插件
 
-按「股票盯盘助手 handoff 设计稿」一比一落地的 Chrome 扩展：自选行情、个股详情（分时/K线/持仓盈亏/ETF成分股）、批量添加、自定义分组、**特别关注 / 右键置顶置底 / 移除**、涨跌配色/主题/字号/角标/刷新间隔等设置。行情走**腾讯 → 新浪 → 东方财富**多源自动切换，实测首屏 ~350ms。
+按「股票盯盘助手 handoff 设计稿」一比一落地的 Chrome 扩展：自选行情、个股详情（分时/K线/持仓盈亏/ETF成分股）、批量添加、自定义分组、**特别关注 / 右键置顶置底 / 移除**、涨跌配色/主题/字号/角标/刷新间隔等设置。行情走**腾讯 → 新浪 → 东方财富**多源自动切换，实测首屏 ~350ms；**币圈（BTC / ETH / SOL 等）**走币安 → Coinbase → CoinGecko 另一条并行链。
 
 ## 功能
 
 - **列表**：四列平铺 `名称·代码 | 现价·涨跌 | 涨跌幅·当日盈亏 | 持有盈亏(金额+收益率)`，无迷你分时列（少 N 个请求/轮）；**开盘中市场的股票自动浮到顶部**（如美股夜盘时段美股靠前），全部休市时回到默认顺序。
+- **币圈**：**与股票 / ETF / 场外基金完全平级**的一类标的（不占顶部指数条）。BTC / ETH / SOL 等 14 个主流币种在添加页搜索（代码 / 中文名 / 英文名 / 拼音，「币圈」chip 空查询时直接摊开目录）后加入自选，橙色「币」标签；列表现价与 24h 涨跌、详情 **24h 走势 + 日/周/月 K + 币圈指标**、持仓盈亏、分组、右键置顶置底星标、工具栏角标、到价提醒全部复用同一套。股票全市场休市时定时刷新只保留自选里的币圈标的——BTC 不会停在几小时前的价格。
 - **分组 Tab**：全部自选 / 持仓 / 自定义分组（多对多归组；弹窗内新建、chip 悬停 ✕ 删除）。
 - **特别关注（收藏）**：★ 星标；列表 / 右键菜单 / 详情页三处状态实时同步；收藏永远排最上。
 - **置顶 / 置底**：右键切换，二者互斥；行内显示「置顶」「置底」角标；排序 `收藏 → (置顶→普通→置底)`，同档保持原序。
 - **右键菜单**：置顶 / 置底 / 特别关注 / 分组·持仓设置 / 删除自选（自定义分组内变为「移出该分组」）。
 - **个股详情**：大字价格卡、分时（VWAP 均价线 + 昨收虚线 + 悬浮十字光标气泡）、日/周/月 K 蜡烛图（前复权）、12 项指标网格、我的持仓卡（市值/盈亏）。
 - **ETF 详情**：自动拉取**持仓成分股**（权重排序 + 实时涨跌，点击跳个股详情；非自选个股详情页提供「＋ 添加自选」/ 星标即收藏闭环）。
-- **添加自选**：代码 / 名称 / 拼音搜索（同花顺 → 腾讯 smartbox → 东财三级），市场筛选 chips，行内 添加/移除/配置。
+- **添加自选**：代码 / 名称 / 拼音搜索（同花顺 → 腾讯 smartbox → 东财三级，币种目录本地即时命中并排在最前），市场筛选 chips（含 **币圈**，空查询时直接摊开全部币种），行内 添加/移除/配置。
 - **设置**：主题（浅色/深色/跟随系统）、涨跌颜色（红涨绿跌/绿涨红跌）、字号（标准/大号）、列表内容开关（盈亏金额/涨跌额）、图标角标（关闭/单只/全部盈亏）、刷新频率（3/5/10 分钟 + 自定义）、节假日休市自动暂停刷新、导入/导出配置、隐私协议与源码说明弹窗。
 - **工具栏图标**：涨跌数字**直接画满图标本体**（大号白字 + 涨跌色块，方向由颜色表达，hover 显示完整信息），替代看不清的小角标；popup 关闭后由 service worker 按周期刷新，支持到价通知。
 - **入口**：点工具栏图标弹出 500×600 弹窗（Chrome 弹窗上限 800×600，600 高占满；浏览器缩放>100% 时 JS 把 body 钉到实际视口——底栏固定可见、仅列表一个滚动条、任何缩放不裁切。已显式复位旧版遗留的「点击打开侧边栏」行为）。
@@ -25,6 +26,11 @@
 | 日/周/月 K | 腾讯 `web.ifzq.gtimg.cn/appstock/app/fqkline/get`（qfq） | 东财 `kline` | 美股代码后缀（AAPL.OQ）从报价响应自动学习 |
 | 搜索 | 同花顺 `news.10jqka.com.cn` | 腾讯 `smartbox` → 东财 `searchapi`(经SW) | 代码/名称/拼音 |
 | ETF 成分股 | 东财 `fundmobapi…FundMNInverstPosition` | — | 季度数据，会话内缓存 |
+| 币圈报价 / 24h 走势 / K线 | 币安 `data-api.binance.vision` | Coinbase `api.exchange.coinbase.com` → CoinGecko `api.coingecko.com` | 见下 |
+
+- **币圈为什么用 `data-api.binance.vision`**：`api.binance.com` 对部分地区直接返回 **451**；`data-api.binance.vision` 是币安只读行情镜像，无地域限制、无鉴权、CORS 全开，且一次请求就能拿到全部币种的 24h 报价（`ticker/24hr?symbols=[...]`）与 K 线。Coinbase 逐币种兜底（美元计价，周/月 K 由日线本地合并）；CoinGecko 只给现价与 24h 涨跌，作最后兜底。
+- **币圈涨跌口径**：7×24 无收盘价，按行业惯例取**滚动 24 小时**——`prevClose` 存 24 小时前的价格，详情页指标写作「24h开 / 24h最高 / 24h前价」，「分时」页签改称 **24h**。24h 曲线跨零点，X 轴按点序号等分（`core/chart.ts` 的 `CRYPTO` 分支）而非墙钟分钟映射，否则曲线会回折。
+- **币圈 secid**：沿用「市场.代码」形态但市场段用非数字前缀 `crypto`（`crypto.BTC`），与东财的数字市场号不会撞车，`router` 据此把这批标的拆到并行的另一条链，不浪费股票源的请求。
 
 - **为什么换主源**：东财 `push2` 对连续请求限流激进（实测数次后直接拒连），是旧版“加载慢”的根源；腾讯公开行情接口无此问题且覆盖全市场（含恒生 `hkHSI`、纳斯达克 `usIXIC`）。
 - **新浪 Referer**：`hq.sinajs.cn` 必须带 `Referer`（fetch 禁止头），用 `declarativeNetRequest` 静态规则（[dnr_rules.json](dnr_rules.json)）在网络层改写，E2E 已验证 200。
@@ -34,16 +40,16 @@
 ## 技术栈
 
 - **TypeScript + Manifest V3**，`esbuild` 打包，零运行时框架（popup 用 60 行 `h()` 构建 DOM）。
-- **数据层**：`DataSource` 接口 + 各源适配器（`src/data/{tencent,sina,eastmoney,ths,mock}.ts`），`src/data/router.ts` 做多源缺口补齐 / 超时(4s) / 按市场调度。
+- **数据层**：`DataSource` 接口 + 各源适配器（`src/data/{tencent,sina,eastmoney,ths,crypto,mock}.ts`），`src/data/router.ts` 做多源缺口补齐 / 超时(4s) / 按市场调度（股票腿与币圈腿并行）。
 - **service worker** 负责关闭 popup 后的角标刷新与到价提醒；popup 打开时按设置间隔自刷新（休市 + 开启节假日开关时自动暂停，手动 ⟳ 不受限）。
 
 ```
 src/
-  data/      types.ts  router.ts  tencent.ts  sina.ts  eastmoney.ts  ths.ts  etf.ts  mock.ts  secid.ts
+  data/      types.ts  router.ts  tencent.ts  sina.ts  eastmoney.ts  ths.ts  crypto.ts  etf.ts  fund.ts  mock.ts  secid.ts
   core/      settings.ts  storage.ts  format.ts  compute.ts  chart.ts
   popup/     popup.html  popup.css  popup.ts  h.ts
   background/service-worker.ts
-e2e/         run.mjs（48 项全流程断言）  shots.mjs（界面截图）
+e2e/         run.mjs（60 项全流程断言）  shots.mjs（界面截图）
 ```
 
 ## 开发 / 构建 / 测试
@@ -53,14 +59,14 @@ npm install
 npm run build      # 原地增量构建 dist/（不删目录，避免 Chrome 中已加载的扩展失效）
 npm run dev        # esbuild watch
 npm run typecheck  # tsc --noEmit
-npm run e2e        # 真实加载扩展跑 48 项端到端断言（需 Chrome for Testing，见下）
+npm run e2e        # 真实加载扩展跑 60 项端到端断言（需 Chrome for Testing，见下）
 npm run shots      # 输出关键界面截图到 e2e/shots/
 npm run release    # --clean 构建 + 校验产物 + 打 Chrome Web Store 上传包（release/*.zip）
 ```
 
-> E2E 用 puppeteer-core 驱动 **Chrome for Testing**（正式版 Chrome 137+ 已移除 `--load-extension`）。没有缓存时先执行 `npx @puppeteer/browsers install chrome@stable`。
+> E2E 用 puppeteer-core 驱动 **Chrome for Testing**（正式版 Chrome 137+ 已移除 `--load-extension`）。没有缓存时先执行 `npx @puppeteer/browsers install chrome@stable`；`e2e/run.mjs` 会自动扫 `~/.cache/puppeteer/chrome` 取版本号最大的一个。
 
-最近一次全量 E2E：**48 通过 / 0 失败**，覆盖：真实行情首屏(~340ms)、指数条、分组切换、详情三图表、指标、持仓卡、ETF 成分股跳转与添加闭环、中英文搜索、添加/配置持仓、右键置顶置底星标移除、分组新建/移出/删除、主题/字号/配色/开关/刷新频率、数据源标注、关于弹窗、toast、导出配置落盘、开盘浮顶排序(forceopen 钩子)、图标数字两种模式、新浪 DNR、持久化、chrome.action.openPopup 真实弹窗(尺寸/底栏钉定)、缩放视口钉定(400px模拟)、forcetheme 预览钩子、站点权限一键授权横幅、空态文案。
+最近一次全量 E2E：**60 通过 / 0 失败**，覆盖：真实行情首屏(~340ms)、指数条、分组切换、详情三图表、指标、持仓卡、ETF 成分股跳转与添加闭环、中英文搜索、添加/配置持仓、右键置顶置底星标移除、分组新建/移出/删除、主题/字号/配色/开关/刷新频率、数据源标注、关于弹窗、toast、导出配置落盘、开盘浮顶排序(forceopen 钩子)、图标数字两种模式、新浪 DNR、持久化、chrome.action.openPopup 真实弹窗(尺寸/底栏钉定)、缩放视口钉定(400px模拟)、forcetheme 预览钩子、站点权限一键授权横幅、空态文案，以及**币圈**：添加页币种目录加自选、中文/代码搜币、自选行「币」标签与真实 24h 涨跌、币圈详情(24h 曲线跨零点单调、币圈专属指标、无股票指标)、日/周/月 K、币种配持仓与分组、行情条不被币圈占用。
 
 ## 打包发布
 

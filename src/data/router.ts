@@ -5,12 +5,22 @@ import { eastmoney } from './eastmoney';
 import { ths } from './ths';
 import { mock } from './mock';
 import { getFundQuotes, maybeFund } from './fund';
+import {
+  getCryptoQuotes,
+  getCryptoTrends,
+  getCryptoKline,
+  searchCrypto,
+  isCrypto,
+  lastCryptoSources,
+} from './crypto';
 
 // ── 多源智能路由 ──────────────────────────────────────────────────────────────
 // 报价：腾讯(全市场,~0.2s,不限流) → 新浪(~40ms,DNR补Referer) → 东财(限流,兜底)
 //       逐源只补上一源缺失的 secid，最终合并——单源缺个别标的不影响整体速度。
 // 分时/K线：腾讯 → 东财（美股盘前腾讯分时为空，自动落到东财）。
 // 搜索：同花顺(实时,CORS开放) → 腾讯 smartbox → 东财。
+// 币圈（`crypto.*`）：走 data/crypto.ts 的币安 → Coinbase → CoinGecko 链，
+//       与股票链并行发起——两边互不阻塞，整体耗时取较慢的一条。
 // mock 仅在全部真实源失败（离线）时使用，并通过 lastSource 标记出来。
 
 const TIMEOUT = 4000;
@@ -31,13 +41,25 @@ function withTimeout<T>(p: Promise<T>, ms = TIMEOUT): Promise<T> {
   });
 }
 
-export type SourceName = 'tencent' | 'sina' | 'eastmoney' | 'ths' | 'fund' | 'mock';
+export type SourceName =
+  | 'tencent'
+  | 'sina'
+  | 'eastmoney'
+  | 'ths'
+  | 'fund'
+  | 'binance'
+  | 'coinbase'
+  | 'coingecko'
+  | 'mock';
 export const SOURCE_LABEL: Record<SourceName, string> = {
   tencent: '腾讯',
   sina: '新浪',
   eastmoney: '东方财富',
   ths: '同花顺',
   fund: '天天基金',
+  binance: '币安',
+  coinbase: 'Coinbase',
+  coingecko: 'CoinGecko',
   mock: '示例数据',
 };
 
@@ -51,10 +73,29 @@ const QUOTE_CHAIN: Array<{ name: SourceName; src: DataSource }> = [
   { name: 'eastmoney', src: eastmoney },
 ];
 
-export async function getQuotes(secids: string[]): Promise<Quote[]> {
-  if (!secids.length) return [];
+interface Leg {
+  got: Map<string, Quote>;
+  used: SourceName[];
+}
+
+/** 币圈腿：整条链在 data/crypto.ts 里，这里只负责超时与源名回传。 */
+async function cryptoLeg(secids: string[]): Promise<Leg> {
+  const got = new Map<string, Quote>();
+  if (!secids.length) return { got, used: [] };
+  try {
+    const rows = await withTimeout(getCryptoQuotes(secids));
+    for (const q of rows) got.set(q.secid, q);
+    return { got, used: rows.length ? [...lastCryptoSources] : [] };
+  } catch (e) {
+    console.info('[data] crypto quotes failed:', e);
+    return { got, used: [] };
+  }
+}
+
+async function stockLeg(secids: string[]): Promise<Leg> {
   const got = new Map<string, Quote>();
   const used: SourceName[] = [];
+  if (!secids.length) return { got, used };
   let missing = secids;
   for (const { name, src } of QUOTE_CHAIN) {
     if (!missing.length) break;
@@ -81,6 +122,17 @@ export async function getQuotes(secids: string[]): Promise<Quote[]> {
       console.info('[data] fund nav fallback failed:', e);
     }
   }
+  return { got, used };
+}
+
+export async function getQuotes(secids: string[]): Promise<Quote[]> {
+  if (!secids.length) return [];
+  // 股票腿与币圈腿并行：币安慢的时候不拖累 A 股首屏，反之亦然。
+  const [stock, crypto] = await Promise.all([
+    stockLeg(secids.filter((s) => !isCrypto(s))),
+    cryptoLeg(secids.filter(isCrypto)),
+  ]);
+  const got = new Map([...stock.got, ...crypto.got]);
   if (!got.size) {
     // 全部真实源失败 → 离线示例数据（UI 会标注）。这才是值得上报的异常。
     console.error('[data] all quote sources failed, serving mock data');
@@ -88,7 +140,7 @@ export async function getQuotes(secids: string[]): Promise<Quote[]> {
     lastQuoteSources = ['mock'];
     return rows;
   }
-  lastQuoteSources = used;
+  lastQuoteSources = [...stock.used, ...crypto.used];
   return secids.map((s) => got.get(s)).filter((q): q is Quote => !!q);
 }
 
@@ -109,6 +161,14 @@ function normalizeUsTrends(t: Trends): Trends {
 }
 
 export async function getTrends(secid: string): Promise<Trends> {
+  if (isCrypto(secid)) {
+    try {
+      return await withTimeout(getCryptoTrends(secid));
+    } catch (e) {
+      if (isOffline()) return mock.getTrends(secid);
+      throw e;
+    }
+  }
   const chain: Array<{ name: SourceName; src: DataSource }> = [
     { name: 'tencent', src: tencent },
     { name: 'eastmoney', src: eastmoney },
@@ -131,6 +191,14 @@ export async function getTrends(secid: string): Promise<Trends> {
 }
 
 export async function getKline(secid: string, klt: 101 | 102 | 103): Promise<Kline[]> {
+  if (isCrypto(secid)) {
+    try {
+      return await withTimeout(getCryptoKline(secid, klt));
+    } catch (e) {
+      if (isOffline()) return mock.getKline(secid, klt);
+      throw e;
+    }
+  }
   const chain: Array<{ name: SourceName; src: DataSource }> = [
     { name: 'tencent', src: tencent },
     { name: 'eastmoney', src: eastmoney },
@@ -152,9 +220,16 @@ export async function getKline(secid: string, klt: 101 | 102 | 103): Promise<Kli
 /** 东财搜索走 service worker 的注入函数（popup 环境由 popup 注入）。 */
 export type SearchFn = (q: string) => Promise<SearchHit[]>;
 
+function dedupe(hits: SearchHit[]): SearchHit[] {
+  const seen = new Set<string>();
+  return hits.filter((h) => !seen.has(h.secid) && seen.add(h.secid));
+}
+
 export async function search(q: string, emSearch?: SearchFn): Promise<SearchHit[]> {
   const query = q.trim();
   if (!query) return [];
+  // 币种目录是本地常量（零延迟、离线可用），命中就排在股票结果前面。
+  const coins = searchCrypto(query);
   const chain: Array<{ name: SourceName; fn: SearchFn }> = [
     { name: 'ths', fn: (x) => ths.search(x) },
     { name: 'tencent', fn: (x) => tencent.search(x) },
@@ -163,11 +238,11 @@ export async function search(q: string, emSearch?: SearchFn): Promise<SearchHit[
   for (const { name, fn } of chain) {
     try {
       const hits = await withTimeout(fn(query));
-      if (hits.length) return hits;
+      if (hits.length) return dedupe([...coins, ...hits]);
     } catch (e) {
       console.info(`[data] search via ${name} failed, falling back:`, e);
     }
   }
-  if (isOffline()) return mock.search(query);
-  return [];
+  if (isOffline()) return dedupe([...coins, ...(await mock.search(query))]);
+  return coins;
 }

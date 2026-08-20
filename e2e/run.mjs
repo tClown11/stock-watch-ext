@@ -2,7 +2,7 @@
 // 用法：node e2e/run.mjs [--headed]
 import puppeteer from 'puppeteer-core';
 import { mkdir, rm } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
@@ -10,11 +10,22 @@ const DIST = path.join(ROOT, 'dist');
 const ART = path.join(ROOT, 'e2e', 'artifacts');
 const HEADED = process.argv.includes('--headed');
 // 正式版 Chrome 137+ 移除了 --load-extension，必须用 Chrome for Testing / Chromium。
-const CFT_CANDIDATES = [
-  `${process.env.HOME}/.cache/puppeteer/chrome/mac_arm-148.0.7778.97/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing`,
-  `${process.env.HOME}/.cache/puppeteer/chrome/mac_arm-150.0.7871.24/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing`,
-];
-const CHROME = CFT_CANDIDATES.find((p) => existsSync(p));
+// 版本号随 `npx @puppeteer/browsers install` 变动，写死会让换机/升级后直接找不到
+// 浏览器 → 扫缓存目录，取版本号最大的那个。
+const CFT_CACHE = `${process.env.HOME}/.cache/puppeteer/chrome`;
+function discoverCft() {
+  if (!existsSync(CFT_CACHE)) return [];
+  const verOf = (d) => parseInt(d.split('-')[1] ?? '0', 10) || 0;
+  return readdirSync(CFT_CACHE)
+    .sort((a, b) => verOf(b) - verOf(a))
+    .flatMap((d) => [
+      `${CFT_CACHE}/${d}/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing`,
+      `${CFT_CACHE}/${d}/chrome-mac-x64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing`,
+      `${CFT_CACHE}/${d}/chrome-linux64/chrome`,
+      `${CFT_CACHE}/${d}/chrome-win64/chrome.exe`,
+    ]);
+}
+const CHROME = discoverCft().find((p) => existsSync(p));
 
 let page; // current popup page (for failure screenshots)
 let passed = 0;
@@ -271,6 +282,8 @@ async function main() {
       assert(names2[1] === '宁德时代', `默认顺序异常: ${names2.slice(0, 3)}`);
       const idx2 = await p2.$$eval('.idx-name', (els) => els.map((e) => e.textContent));
       assert(idx2[0] === '上证指数', `全休市指数条应回落默认顺序: ${idx2.slice(0, 3)}`);
+      // 行情条只放股票指数：币圈与股票平级，走自选列表而非行情条
+      assert((await p2.$$eval('.idx-chip', (els) => els.length)) === 6, '行情条混入了非指数芯片');
       await p2.close();
     });
 
@@ -802,6 +815,121 @@ async function main() {
       await page.type('#add-search', 'zzzz不存在的股票zzzz');
       await waitFor(async () => (await text('.src-note')).includes('没有匹配'), '无结果文案', 10000);
       await clickText('.sc-action', '完成');
+    });
+
+    // ═══ 13. 币圈（与股票/ETF/基金平级：搜索 → 加自选 → 详情）═══
+    console.log('【13】币圈');
+    await step('添加页「币圈」筛选摊开币种目录并可加自选', async () => {
+      await clickSel('.qa-btn[title="添加自选"]');
+      await page.waitForSelector('.mkt-chips');
+      await clickText('.mkt-chip', '币圈');
+      await waitFor(async () => {
+        const names = await allText('.u-row .row-name');
+        return names.includes('比特币') && names.includes('Solana');
+      }, '币种目录', 15000);
+      await waitFor(async () => {
+        const rows = await allText('.u-row');
+        return (rows.find((r) => r.includes('Solana')) ?? '').match(/\d/);
+      }, '币种目录带报价', 20000);
+      for (const coin of ['比特币', 'Solana']) {
+        const ok = await page.$$eval('.u-row', (rows, c) => {
+          const r = rows.find((x) => (x.textContent ?? '').includes(c));
+          r?.querySelector('.u-btn.add')?.click();
+          return !!r;
+        }, coin);
+        assert(ok, `目录里没有 ${coin}`);
+        await waitFor(async () => {
+          const rows = await allText('.u-row');
+          return (rows.find((r) => r.includes(coin)) ?? '').includes('移除');
+        }, `${coin} 标记为已添加`);
+      }
+    });
+    await step('中文/代码搜索命中币种（与股票同一个搜索框）', async () => {
+      await page.$eval('#add-search', (el) => (el.value = ''));
+      await page.type('#add-search', '以太坊', { delay: 30 });
+      await waitFor(async () => (await allText('.u-row .row-name')).includes('以太坊'), '中文搜币', 15000);
+      await page.$eval('#add-search', (el) => (el.value = ''));
+      await page.type('#add-search', 'BTC', { delay: 30 });
+      await waitFor(async () => (await allText('.u-row .row-name')).includes('比特币'), '代码搜币', 15000);
+      await clickText('.sc-action', '完成');
+    });
+    await step('自选列表里的币种带「币」标签与实时行情', async () => {
+      const coinRows = () =>
+        page.$$eval('.row', (rows) =>
+          rows
+            .filter((r) => ['比特币', 'Solana'].some((c) => r.querySelector('.row-name')?.textContent === c))
+            .map((r) => ({
+              name: r.querySelector('.row-name')?.textContent,
+              tag: r.querySelector('.mkt-tag')?.textContent,
+              price: r.querySelector('.price')?.textContent,
+              pct: r.querySelector('.pct-badge')?.textContent,
+            }))
+        );
+      await waitFor(async () => {
+        const rs = await coinRows();
+        return rs.length === 2 && rs.every((r) => r.tag === '币' && r.price !== '—' && /^[+-][\d,.]+%$/.test(r.pct ?? ''));
+      }, '币圈自选行带「币」标签与行情', 25000);
+      // 行情条只放股票指数，不因为自选里有币而变化
+      assert((await $$len('.idx-chip')) === 6, '行情条混入了币圈芯片');
+    });
+    await step('点自选里的比特币进详情：24h 曲线 + 币圈指标 + 「币」市场标签', async () => {
+      await clickText('.row .row-name', '比特币');
+      await waitFor(() => text('.big-price .p').then((t) => t && t !== '—'), '币圈详情价格', 15000);
+      assert((await text('.dt-name')).includes('比特币'), '详情标题不是比特币');
+      assert((await text('.dt-name .mkt-tag')) === '币', '缺少「币」市场标签');
+      assert((await text('.sc-head .code')).includes('加密货币'), '未标注加密货币');
+      assert((await text('.chart-tabs')).includes('24h'), '分时页签未改写为 24h');
+      await waitFor(async () => {
+        const d = await page.$$eval('.chart path[stroke]', (ps) => ps.map((p) => (p.getAttribute('d') ?? '').length));
+        return d.some((len) => len > 200);
+      }, '24h 曲线路径', 20000);
+      const labels = await allText('.metric .l');
+      assert(labels.includes('24h最高') && labels.includes('计价单位'), `币圈指标缺失: ${labels}`);
+      assert(!labels.includes('市盈(动)') && !labels.includes('换手率'), `币圈不应有股票指标: ${labels}`);
+      assert((await text('.chart-legend')).includes('24h前'), '图例未标注 24h 前基准');
+      // 24h 滚动窗口跨零点也必须单调递增（按点序号等分，而非墙钟分钟）
+      const mono = await page.$$eval('.chart path[stroke]', (ps) => {
+        const d = ps.map((p) => p.getAttribute('d') ?? '').sort((a, b) => b.length - a.length)[0] ?? '';
+        const xs = [...d.matchAll(/[ML] ?(-?[\d.]+)/g)].map((m) => parseFloat(m[1]));
+        return xs.length > 100 && xs.every((x, i) => i === 0 || x >= xs[i - 1]);
+      });
+      assert(mono, '24h 曲线 X 坐标跨零点后回折');
+    });
+    await step('币圈日/周/月 K 蜡烛图渲染', async () => {
+      for (const tab of ['日K', '周K', '月K']) {
+        await clickText('.chart-tabs .seg-item', tab);
+        await waitFor(() => $$len('.chart rect[fill]').then((n) => n > 20), `币圈 ${tab} 蜡烛`, 20000);
+      }
+      await page.click('.back-btn');
+      await waitFor(() => $$len('.row').then((n) => n >= 16), '回到列表');
+    });
+    await step('币种可配持仓与分组（与股票同一套设置），随后清理', async () => {
+      await clickText('.row', 'Solana', { right: true });
+      await page.waitForSelector('.row-menu');
+      await clickText('.row-menu-item', '分组 / 持仓设置');
+      await page.waitForSelector('#hold-shares');
+      await page.type('#hold-shares', '2');
+      await page.type('#hold-cost', '80');
+      await clickText('.mbtn.save', '保存');
+      await waitFor(
+        () =>
+          page.$$eval('.row', (rows) => {
+            const r = rows.find((x) => x.querySelector('.row-name')?.textContent === 'Solana');
+            const pnl = r?.querySelector('.row-hold .pnl')?.textContent ?? '—';
+            return pnl !== '—' && /^[+-]/.test(pnl);
+          }),
+        'SOL 持仓盈亏已计算',
+        20000
+      );
+      await clickText('.group-seg .seg-item', '持仓');
+      await waitFor(async () => (await allText('.row .row-name')).includes('Solana'), '持仓组含 SOL');
+      await clickText('.group-seg .seg-item', '全部自选');
+      for (const coin of ['比特币', 'Solana']) {
+        await clickText('.row', coin, { right: true });
+        await page.waitForSelector('.row-menu');
+        await clickText('.row-menu-item', '删除自选');
+        await waitFor(async () => !(await allText('.row')).some((r) => r.includes(coin)), `清理 ${coin}`);
+      }
     });
   } finally {
     await browser.close().catch(() => {});

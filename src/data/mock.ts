@@ -20,6 +20,7 @@ const SECID: Record<Market, (c: string) => string> = {
   SZ: (c) => `0.${c}`,
   HK: (c) => `116.${c}`,
   US: (c) => `105.${c}`,
+  CRYPTO: (c) => `crypto.${c}`,
 };
 const secidOf = (r: Row) => SECID[r.m](r.c);
 
@@ -55,6 +56,10 @@ const POOL: Row[] = [
   { n: '拼多多', c: 'PDD', m: 'US', p: 138.9, pv: 142.5, py: 'pinduoduo' },
   { n: '微软', c: 'MSFT', m: 'US', p: 448.2, pv: 445.1, py: 'microsoft' },
   { n: '纳指100ETF', c: '513100', m: 'SH', p: 1.52, pv: 1.505, etf: true, py: 'nazhietf' },
+  // 币圈离线兜底：顶部行情条默认就带 BTC/ETH/SOL，断网时也得有东西可画。
+  { n: '比特币', c: 'BTC', m: 'CRYPTO', p: 68955.21, pv: 64360.0, py: 'btcbitcoin' },
+  { n: '以太坊', c: 'ETH', m: 'CRYPTO', p: 2235.0, pv: 1912.63, py: 'ethethereum' },
+  { n: 'Solana', c: 'SOL', m: 'CRYPTO', p: 84.35, pv: 77.01, py: 'solsolana' },
 ];
 
 const ALL = [...RAW, ...POOL];
