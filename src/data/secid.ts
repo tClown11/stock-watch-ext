@@ -4,6 +4,8 @@ import type { Market } from './types';
 //   1   = 上交所 (SH)      0   = 深交所 (SZ)
 //   116 = 港交所 (HK)      105/106/107 = 美股 (NASDAQ/NYSE/AMEX)
 //   100 = 全球指数 (恒生/纳指等)
+// 币圈没有交易所编号，借用非数字前缀 `crypto`（如 `crypto.BTC`），与东财的
+// 数字市场号不会撞车，router 也据此把这批标的分流到 data/crypto.ts。
 const MKT_FROM_PREFIX: Record<string, Market> = {
   '0': 'SZ',
   '1': 'SH',
@@ -14,6 +16,7 @@ const MKT_FROM_PREFIX: Record<string, Market> = {
   '100': 'US', // global indices bucket — only used for the index strip
   '128': 'HK',
   '153': 'HK',
+  crypto: 'CRYPTO',
 };
 
 export function marketFromPrefix(prefix: string | number): Market {
@@ -34,6 +37,8 @@ export function toSecid(market: Market, code: string): string {
       return `116.${code}`;
     case 'US':
       return `105.${code}`;
+    case 'CRYPTO':
+      return `crypto.${code.toUpperCase()}`;
   }
 }
 

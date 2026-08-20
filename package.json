@@ -1,6 +1,6 @@
 {
   "name": "stock-watch-ext",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "盯盘助手 - Chrome MV3 实时行情盯盘插件",
   "private": true,
   "type": "module",

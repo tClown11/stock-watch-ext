@@ -1,7 +1,7 @@
 // ── Shared domain types ────────────────────────────────────────────────────
 
-/** Market bucket used for the coloured 沪/深/港/美 tag and grouping. */
-export type Market = 'SH' | 'SZ' | 'HK' | 'US';
+/** Market bucket used for the coloured 沪/深/港/美/币 tag and grouping. */
+export type Market = 'SH' | 'SZ' | 'HK' | 'US' | 'CRYPTO';
 
 /** A user holding, used for 持仓盈亏. */
 export interface Holding {
@@ -55,6 +55,8 @@ export interface Quote {
   navDate?: string;
   /** 场外基金累计净值 */
   accNav?: number;
+  /** 加密货币 24h 成交加权均价（仅币安源提供） */
+  vwap?: number;
 }
 
 export interface TrendPoint {

@@ -15,6 +15,16 @@ export function decimalsFor(price: number): number {
   return price < 10 ? 3 : 2;
 }
 
+/**
+ * 加密货币精度：$1 以上跟交易所一样 2 位（BTC 68,955.21 / SOL 84.35），
+ * 小额币种按数量级放宽，否则 DOGE、SHIB 之类会被截成 0.000。
+ */
+export function decimalsForCrypto(price: number): number {
+  const a = Math.abs(price);
+  if (!Number.isFinite(a) || a >= 1) return 2;
+  return a >= 0.01 ? 4 : 6;
+}
+
 /** 成交量: 手 → 万手 */
 export function volWan(handsShares: number | undefined): string {
   if (handsShares == null) return '—';

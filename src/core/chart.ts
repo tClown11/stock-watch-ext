@@ -50,8 +50,10 @@ export interface TimeShareChart extends Geom {
 // CN: 09:30–11:30 / 13:00–15:00（240 分钟）
 // HK: 09:30–12:00 / 13:00–16:00（330 分钟）
 // US: 美东 09:30–16:00（390 分钟；数据层已把时间归一为美东，见 router）
-export type SessionKind = 'CN' | 'HK' | 'US';
-const SESSIONS: Record<SessionKind, Array<[number, number]>> = {
+// CRYPTO: 7×24 无时段，取「最近 24 小时」滚动窗口 —— 起点是 24 小时前的此刻，
+//   会跨零点，按墙钟分钟映射会让曲线回折，故这一档改用点序号等分（见下）。
+export type SessionKind = 'CN' | 'HK' | 'US' | 'CRYPTO';
+const SESSIONS: Record<Exclude<SessionKind, 'CRYPTO'>, Array<[number, number]>> = {
   CN: [
     [570, 690],
     [780, 900],
@@ -62,10 +64,10 @@ const SESSIONS: Record<SessionKind, Array<[number, number]>> = {
   ],
   US: [[570, 960]],
 };
-const sessionTotal = (k: SessionKind) => SESSIONS[k].reduce((a, [s, e]) => a + (e - s), 0);
+const sessionTotal = (k: Exclude<SessionKind, 'CRYPTO'>) => SESSIONS[k].reduce((a, [s, e]) => a + (e - s), 0);
 
 /** Minutes elapsed within the market session（跨窗口累计，窗口外钳到边界）。 */
-function sessionMinute(t: string, kind: SessionKind): number {
+function sessionMinute(t: string, kind: Exclude<SessionKind, 'CRYPTO'>): number {
   const [hh, mm] = t.split(':').map(Number);
   const x = (hh || 0) * 60 + (mm || 0);
   let acc = 0;
@@ -90,11 +92,14 @@ export function timeShareChart(trends: Trends, geom: Geom = GEOM, kind: SessionK
   const max = prevClose + dev;
   const spanX = w - padL - padR;
   const spanY = h - padT - padB;
-  const X = (t: string) => padL + (sessionMinute(t, kind) / sessionTotal(kind)) * spanX;
+  const X =
+    kind === 'CRYPTO'
+      ? (_t: string, i: number) => padL + (pts.length > 1 ? i / (pts.length - 1) : 0) * spanX
+      : (t: string, _i: number) => padL + (sessionMinute(t, kind) / sessionTotal(kind)) * spanX;
   const Y = (v: number) => padT + (1 - (v - min) / (max - min)) * spanY;
 
-  const cps: ChartPoint[] = pts.map((p) => ({
-    x: X(p.t),
+  const cps: ChartPoint[] = pts.map((p, i) => ({
+    x: X(p.t, i),
     y: Y(p.price),
     t: p.t,
     price: p.price,
@@ -105,7 +110,7 @@ export function timeShareChart(trends: Trends, geom: Geom = GEOM, kind: SessionK
   const lastX = cps[cps.length - 1].x;
   const area = `${line} L ${lastX.toFixed(1)} ${(h - padB).toFixed(1)} L ${padL} ${(h - padB).toFixed(1)} Z`;
   const avg = pts
-    .map((p, i) => (i ? 'L' : 'M') + X(p.t).toFixed(1) + ' ' + Y(p.avg ?? p.price).toFixed(1))
+    .map((p, i) => (i ? 'L' : 'M') + X(p.t, i).toFixed(1) + ' ' + Y(p.avg ?? p.price).toFixed(1))
     .join(' ');
   const yTicks: AxisTick[] = [max, prevClose + dev / 2, prevClose, prevClose - dev / 2, min].map((v) => ({
     pos: Y(v),

@@ -3,10 +3,21 @@ import * as router from '../data/router';
 import { SOURCE_LABEL } from '../data/router';
 import { getConstituents, type Constituent } from '../data/etf';
 import { getFundNav, getFundHoldings, type NavPoint, type FundHoldings } from '../data/fund';
+import { CRYPTO_COINS, coinHit, cryptoSecid, isCrypto } from '../data/crypto';
+import { splitSecid } from '../data/secid';
 import { loadStore, saveStore, onStoreChanged, type Alert } from '../core/storage';
 import { DEFAULT_SETTINGS, colorsOf, refreshMs, type Settings } from '../core/settings';
 import { fmt, sgn, decimalsFor } from '../core/format';
-import { pnlOf, metricsFor, hexToRgba, marketSessionOpen, displaySort, buildTrendChart } from '../core/compute';
+import {
+  pnlOf,
+  metricsFor,
+  hexToRgba,
+  marketSessionOpen,
+  displaySort,
+  buildTrendChart,
+  priceDecimals,
+  type SessionMarket,
+} from '../core/compute';
 import {
   timeShareChart,
   candleChart,
@@ -24,10 +35,11 @@ const MKT: Record<Market, { tag: string; bg: string; fg: string; where: string }
   SZ: { tag: '深', bg: 'rgba(63,116,201,.12)', fg: '#3f74c9', where: '深交所' },
   HK: { tag: '港', bg: 'rgba(224,161,58,.16)', fg: '#c98b2e', where: '港交所' },
   US: { tag: '美', bg: 'rgba(122,91,208,.14)', fg: '#7a5bd0', where: '美股' },
+  CRYPTO: { tag: '币', bg: 'rgba(232,130,26,.14)', fg: '#e8821a', where: '加密货币 · 7×24' },
 };
 
 // [secid, 名称, 所属市场]——v6 设计：指数芯片自带该市场交易状态点
-const INDEX_SECIDS: Array<[string, string, 'A' | 'HK' | 'US']> = [
+const INDEX_SECIDS: Array<[string, string, SessionMarket]> = [
   ['1.000001', '上证指数', 'A'],
   ['0.399001', '深证成指', 'A'],
   ['0.399006', '创业板指', 'A'],
@@ -36,7 +48,8 @@ const INDEX_SECIDS: Array<[string, string, 'A' | 'HK' | 'US']> = [
   ['100.NDX', '纳斯达克', 'US'],
 ];
 
-type AddMkt = '全部' | '沪深' | '港股' | '美股' | 'ETF';
+// 顶部行情条只放股票指数：币圈与股票/ETF/基金平级，走自选列表而非行情条。
+type AddMkt = '全部' | '沪深' | '港股' | '美股' | 'ETF' | '币圈';
 type DetailTab = '分时' | '日K' | '周K' | '月K';
 
 interface AppState {
@@ -110,7 +123,8 @@ const quoteFor = (secid: string) => state.quotes.get(secid);
 // Per-market session status (Beijing time). US uses the CN-time window ≈ 21:30–04:00.
 // `?forceopen=US` / `?forceopen=A,HK` / `?forceopen=none` 仅供 E2E 与预览固定市场状态。
 const FORCE_OPEN = new URLSearchParams(location.search).get('forceopen');
-function marketOpen(m: 'A' | 'HK' | 'US'): boolean {
+function marketOpen(m: SessionMarket): boolean {
+  if (m === 'CRYPTO') return true; // 币圈 7×24，forceopen 只用于股票市场
   if (FORCE_OPEN != null) return FORCE_OPEN !== 'none' && FORCE_OPEN.split(',').includes(m);
   return marketSessionOpen(m);
 }
@@ -144,6 +158,9 @@ const DATA_ORIGINS = [
   'https://searchapi.eastmoney.com/*',
   'https://fundmobapi.eastmoney.com/*',
   'https://news.10jqka.com.cn/*',
+  'https://data-api.binance.vision/*',
+  'https://api.exchange.coinbase.com/*',
+  'https://api.coingecko.com/*',
 ];
 async function checkPerms() {
   if (!inExtension() || !chrome.permissions?.contains) return;
@@ -171,16 +188,16 @@ async function grantPerms() {
 }
 
 // ── data loading ─────────────────────────────────────────────────────────────
-const anyMarketOpen = () => marketOpen('A') || marketOpen('HK') || marketOpen('US');
+const anyStockMarketOpen = () => marketOpen('A') || marketOpen('HK') || marketOpen('US');
 
-/** auto=true 为定时刷新：开启「节假日自动切换休市」且全市场收盘时跳过网络请求。 */
+/**
+ * auto=true 为定时刷新：开启「节假日自动切换休市」且股票全市场收盘时不再请求股票行情。
+ * 自选里有币圈标的时不整体跳过——加密货币 7×24 有行情，只保留这部分请求，
+ * 既省掉无意义的股票请求，又不会让 BTC 停在几小时前的价格。
+ */
 async function refreshQuotes(auto = false) {
-  if (auto && state.settings.toggles.holiday && !anyMarketOpen() && state.lastUpdated) {
-    state.marketPaused = true;
-    render();
-    return;
-  }
-  state.marketPaused = false;
+  const stocksPaused = auto && state.settings.toggles.holiday && !anyStockMarketOpen() && !!state.lastUpdated;
+  state.marketPaused = stocksPaused;
   const wanted = new Set(state.watchlist.map((w) => w.secid));
   if (state.detailSecid) wanted.add(state.detailSecid);
   // 场外基金的持仓成分股并入同一批请求：盘中估算随每次刷新更新
@@ -189,11 +206,17 @@ async function refreshQuotes(auto = false) {
     if (hs) for (const st of hs.stocks) wanted.add(st.secid);
   }
   const indexIds = INDEX_SECIDS.map(([id]) => id);
+  let asked = [...wanted, ...indexIds];
+  if (stocksPaused) asked = asked.filter(isCrypto);
+  if (!asked.length) {
+    render();
+    return;
+  }
   state.refreshing = true;
   render();
   try {
-    // 自选 + 指数合并为一次批量请求（腾讯单请求 ~0.2s 全市场）。
-    const rows = await router.getQuotes([...wanted, ...indexIds]);
+    // 自选 + 指数合并为一次批量请求（router 内部把币圈拆到并行的另一条链）。
+    const rows = await router.getQuotes(asked);
     const indexSet = new Set(indexIds);
     const idx: Quote[] = [];
     for (const q of rows) {
@@ -204,7 +227,9 @@ async function refreshQuotes(auto = false) {
     state.lastUpdated = new Date().toLocaleTimeString('zh-CN', { hour12: false });
     // 工具栏角标与弹窗同步：每次拿到新行情立刻推给 service worker 重算角标，
     // 否则角标要等下一次 alarm（最短 30s、默认几分钟）才更新，与列表数据错位。
-    pushQuotesToBadge(rows);
+    // 币圈单刷（休市时段）只有部分标的，推过去会让角标误判「第一只有报价的」，
+    // 交给 service worker 自己的 alarm 用全量数据算。
+    if (!stocksPaused) pushQuotesToBadge(rows);
     // 自选里的场外基金：首次发现时拉取前十大持仓（幂等），供盘中估算
     for (const w of state.watchlist) if (state.quotes.get(w.secid)?.otc) loadFundHoldings(w.secid);
     // 详情页开着分时图时，跟随刷新拉一次最新分时（场外基金无分时，跳过）。
@@ -282,6 +307,17 @@ function swSearch(q: string): Promise<SearchHit[]> {
 function doSearch(q: string): Promise<SearchHit[]> {
   // 同花顺 → 腾讯 smartbox → 东财（扩展里经 SW 转发绕过 CORS）。
   return router.search(q, inExtension() ? swSearch : undefined);
+}
+
+/** 添加页切到「币圈」时把整份币种目录的报价补上（目录是常量，一次批量请求搞定）。 */
+async function loadCoinQuotes() {
+  try {
+    const qs = await router.getQuotes(CRYPTO_COINS.map((c) => cryptoSecid(c.sym)));
+    for (const q of qs) state.quotes.set(q.secid, q);
+    render();
+  } catch (e) {
+    console.info('[popup] coin quotes unavailable', e);
+  }
 }
 
 let imeComposing = false;
@@ -441,6 +477,8 @@ function toast(msg: string) {
 // v6 设计：无独立头部行，指数条置顶；每个芯片带该市场交易状态点（绿=交易中）。
 // 排序：开市中的市场优先展示（如 15:00 后 A 股收市→恒生提前；夜盘→纳斯达克提前），
 // 组内保持原有顺序；全部休市时回落到默认顺序。
+const MKT_CN: Record<SessionMarket, string> = { A: 'A股', HK: '港股', US: '美股', CRYPTO: '币圈' };
+
 function renderIndexStrip() {
   const { up, down } = colors();
   const bySecid = new Map(state.indices.map((q) => [q.secid, q]));
@@ -456,8 +494,7 @@ function renderIndexStrip() {
       const has = !!q && Number.isFinite(q.price);
       const c = has ? (q!.changePct >= 0 ? up : down) : 'var(--sub)';
       const open = marketOpen(mkt);
-      const mktCn = mkt === 'A' ? 'A股' : mkt === 'HK' ? '港股' : '美股';
-      return h('div', { class: 'idx-chip', title: `${mktCn}${open ? ' · 交易中' : ' · 休市'}` }, [
+      return h('div', { class: 'idx-chip', title: `${MKT_CN[mkt]}${open ? ' · 交易中' : ' · 休市'}` }, [
         h('div', { class: 'idx-top' }, [
           h('span', { class: `idx-dot${open ? ' open' : ''}` }),
           h('span', { class: 'idx-name' }, name),
@@ -481,7 +518,7 @@ function renderRow(w: WatchItem) {
   const { up, down } = colors();
   const q = quoteFor(w.secid);
   const s = state.settings;
-  const dec = q?.otc ? 4 : q ? decimalsFor(q.price) : 2;
+  const dec = priceDecimals(q);
   const color = q ? (q.changePct >= 0 ? up : down) : 'var(--sub)';
   const pnl = q ? pnlOf(q, w.hold, up, down) : null;
   const est = q?.otc ? fundEstimate(w.secid) : null;
@@ -634,11 +671,13 @@ function renderDetail() {
     loadFundHoldings(secid);
   }
   const est = otc ? fundEstimate(secid) : null;
-  const dec = otc ? 4 : q ? decimalsFor(q.price) : 2;
+  const crypto = m === 'CRYPTO';
+  const dec = priceDecimals(q, otc ? 4 : 2);
   const color = q ? (q.changePct >= 0 ? up : down) : 'var(--fg)';
   const isIntraday = state.detailTab === '分时';
   // 分时坐标按市场时段映射：A股 240 分钟 / 港股 330 分钟 / 美股（美东）390 分钟
-  const sessionKind: SessionKind = m === 'HK' ? 'HK' : m === 'US' ? 'US' : 'CN';
+  // 币圈没有时段，走「最近 24 小时」滚动窗口（按点序号等分，见 core/chart）。
+  const sessionKind: SessionKind = crypto ? 'CRYPTO' : m === 'HK' ? 'HK' : m === 'US' ? 'US' : 'CN';
   let trends = isIntraday ? state.trends.get(secid) : undefined;
   if (trends && q && trends.points.length) {
     // Keep the intraday tail pinned to the live price / 昨收.
@@ -678,14 +717,19 @@ function renderDetail() {
       otc
         ? h('div', { class: 'nav-note' }, `场外基金 · 非实时行情 · 净值日期 ${q?.navDate || '—'}`)
         : h('div', { class: 'chart-tabs' }, (['分时', '日K', '周K', '月K'] as DetailTab[]).map((tab) =>
-            h('button', { class: `seg-item ${state.detailTab === tab ? 'active' : ''}`, onclick: () => switchTab(secid, tab) }, tab)
+            h(
+              'button',
+              { class: `seg-item ${state.detailTab === tab ? 'active' : ''}`, onclick: () => switchTab(secid, tab) },
+              // 币圈无开收盘，"分时" 实为最近 24 小时，标签直接写清楚。
+              crypto && tab === '分时' ? '24h' : tab
+            )
           )),
       // 支付宝式盘中参考：按最新季报前十大持仓加权估算今日涨跌（明确标注非官方）
       otc && est
         ? h('div', { class: 'nav-est', style: `color:${est.pct >= 0 ? up : down}` },
             `盘中估算 ${sgn(est.pct, 2)}% · 按 ${est.asOf} 前十大持仓加权（覆盖约 ${est.coverage}% 仓位）· 非官方数据`)
         : null,
-      otc ? renderNavChart(secid, chartW) : renderChart(chart, color, up, down, chartEmptyMsg),
+      otc ? renderNavChart(secid, chartW) : renderChart(chart, color, up, down, chartEmptyMsg, crypto ? dec : undefined),
       otc
         ? renderNavAxis(secid)
         : isIntraday
@@ -696,16 +740,22 @@ function renderDetail() {
                 ? ['09:30', '12:00 / 13:00', '16:00']
                 : sessionKind === 'US'
                   ? ['09:30', '12:45', '16:00']
-                  : ['09:30', '11:30 / 13:00', '15:00']
+                  : sessionKind === 'CRYPTO'
+                    ? cryptoAxisLabels(trends)
+                    : ['09:30', '11:30 / 13:00', '15:00']
               ).map((s) => h('span', {}, s))
             )
           : null,
       !otc && isIntraday
         ? h('div', { class: 'chart-legend' }, [
-            h('span', {}, [h('span', { class: 'legend-swatch', style: `background:${color}` }), '分时']),
+            h('span', {}, [h('span', { class: 'legend-swatch', style: `background:${color}` }), crypto ? '24h 价格' : '分时']),
             h('span', {}, [h('span', { class: 'legend-swatch', style: 'background:#e0a13a' }), '均价']),
-            h('span', {}, [h('span', { class: 'legend-swatch', style: 'border-top:1px dashed #b0b0b5;height:0' }), q ? `昨收 ${fmt(q.prevClose, dec)}` : '昨收']),
+            h('span', {}, [
+              h('span', { class: 'legend-swatch', style: 'border-top:1px dashed #b0b0b5;height:0' }),
+              q ? `${crypto ? '24h前' : '昨收'} ${fmt(q.prevClose, dec)}` : crypto ? '24h前' : '昨收',
+            ]),
             sessionKind === 'US' ? h('span', {}, '美东时间') : null,
+            crypto ? h('span', {}, '本地时间 · 7×24') : null,
           ])
         : null,
     ]),
@@ -737,6 +787,13 @@ function renderDetail() {
           h('button', { class: 'btn primary', onclick: () => addCurrentToWatch(secid) }, '＋ 添加自选'),
         ]),
   ]);
+}
+
+/** 币圈 24h 轴：滚动窗口的首/中/尾时刻（如 14:00 · 02:00 · 14:00）。 */
+function cryptoAxisLabels(trends: Trends | undefined): string[] {
+  const pts = trends?.points ?? [];
+  if (pts.length < 2) return ['24h前', '12h前', '现在'];
+  return [pts[0].t, pts[Math.floor(pts.length / 2)].t, pts[pts.length - 1].t];
 }
 
 // ── ETF 持仓成分股（设计稿：按权重排列 · 点击查看个股）──────────────────────
@@ -818,12 +875,17 @@ function renderNavAxis(secid: string) {
   ]);
 }
 
-function marketOfSecid(secid: string): Market {
-  const pfx = secid.slice(0, secid.indexOf('.'));
-  return pfx === '1' ? 'SH' : pfx === '0' ? 'SZ' : pfx === '116' ? 'HK' : 'US';
-}
+const marketOfSecid = (secid: string): Market => splitSecid(secid).market;
 
-function renderChart(chart: TimeShareChart | CandleChart | null, color: string, up: string, down: string, emptyMsg = '加载中…') {
+function renderChart(
+  chart: TimeShareChart | CandleChart | null,
+  color: string,
+  up: string,
+  down: string,
+  emptyMsg = '加载中…',
+  /** 价格小数位；缺省按昨收数量级推断（币圈的小额币种由调用方显式传入）。 */
+  decOverride?: number
+) {
   const W = chart ? chart.w : 436;
   const H = chart ? chart.h : 156;
   if (!chart) {
@@ -834,7 +896,7 @@ function renderChart(chart: TimeShareChart | CandleChart | null, color: string, 
     ]);
   }
   const prevClose = chart.points[0]?.prevClose ?? 0;
-  const dec = decimalsFor(prevClose || chart.points[0]?.price || 1);
+  const dec = decOverride ?? decimalsFor(prevClose || chart.points[0]?.price || 1);
   const gridR = W - chart.padR;
 
   // price grid + right-side labels
@@ -1143,7 +1205,7 @@ function sortedWatchlist(): WatchItem[] {
 function addAlert(secid: string) {
   const q = quoteFor(secid);
   const w = state.watchlist.find((x) => x.secid === secid);
-  const cur = q ? fmt(q.price, decimalsFor(q.price)) : '';
+  const cur = q ? fmt(q.price, priceDecimals(q)) : '';
   const input = prompt(`为「${q?.name ?? w?.name ?? secid}」设置到价提醒\n当前价 ${cur}，输入目标价：`);
   if (!input) return;
   const value = parseFloat(input);
@@ -1159,7 +1221,7 @@ function addAlert(secid: string) {
 // ── render: add ──────────────────────────────────────────────────────────────
 function renderAdd() {
   const { up } = colors();
-  const chips: AddMkt[] = ['全部', '沪深', '港股', '美股', 'ETF'];
+  const chips: AddMkt[] = ['全部', '沪深', '港股', '美股', 'ETF', '币圈'];
   const mkMatch = (hit: SearchHit) => {
     const am = state.addMkt;
     if (am === '全部') return true;
@@ -1167,12 +1229,16 @@ function renderAdd() {
     if (am === '港股') return hit.market === 'HK';
     if (am === '美股') return hit.market === 'US';
     if (am === 'ETF') return !!hit.etf;
+    if (am === '币圈') return hit.market === 'CRYPTO';
     return true;
   };
   // With no query, show the current watch list (all marked 已添加).
+  // 「币圈」筛选下空查询直接摊开币种目录——支持的币种有限，可以直接挑。
   const baseHits: SearchHit[] = state.query.trim()
     ? state.hits
-    : state.watchlist.map((w) => ({ secid: w.secid, code: w.code, market: w.market, name: w.name, etf: w.etf }));
+    : state.addMkt === '币圈'
+      ? CRYPTO_COINS.map(coinHit)
+      : state.watchlist.map((w) => ({ secid: w.secid, code: w.code, market: w.market, name: w.name, etf: w.etf }));
   const list = baseHits.filter(mkMatch);
 
   return h('div', { class: 'screen' }, [
@@ -1202,7 +1268,14 @@ function renderAdd() {
       }),
     ]),
     h('div', { class: 'mkt-chips' }, chips.map((c) =>
-      h('button', { class: 'mkt-chip', style: state.addMkt === c ? `color:#fff;background:${up};font-weight:600` : '', onclick: () => setState({ addMkt: c }) }, c)
+      h('button', {
+        class: 'mkt-chip',
+        style: state.addMkt === c ? `color:#fff;background:${up};font-weight:600` : '',
+        onclick: () => {
+          setState({ addMkt: c });
+          if (c === '币圈' && !state.query.trim()) loadCoinQuotes();
+        },
+      }, c)
     )),
     h('div', { class: 'scroll zoomable', id: 'add-list' }, renderAddRows(list)),
     h('div', { class: 'footer-mini' }, [
@@ -1220,7 +1293,7 @@ function renderAddRows(list: SearchHit[]) {
   return list.map((hit) => {
     const q = quoteFor(hit.secid);
     const w = state.watchlist.find((x) => x.secid === hit.secid);
-    const dec = q ? decimalsFor(q.price) : 2;
+    const dec = priceDecimals(q);
     const color = q ? (q.changePct >= 0 ? up : down) : 'var(--sub)';
     return h('div', { class: 'u-row' }, [
       h('div', { style: 'flex:1;min-width:0' }, [
@@ -1320,7 +1393,7 @@ function renderSettings() {
         h('span', { class: 'set-label', style: 'margin:0' }, '数据源'),
         h('span', { class: 'muted' }, router.isOffline()
           ? '示例数据（离线）'
-          : (router.lastQuoteSources.length ? router.lastQuoteSources.map((n) => SOURCE_LABEL[n]).join(' · ') : '腾讯 · 新浪 · 东方财富') + ' 多源自动切换'),
+          : (router.lastQuoteSources.length ? router.lastQuoteSources.map((n) => SOURCE_LABEL[n]).join(' · ') : '腾讯 · 新浪 · 东方财富 · 币安') + ' 多源自动切换'),
       ]),
       h('div', { class: 'list-item tappable', onclick: () => setState({ aboutModal: 'source' }) }, [h('span', { class: 'set-label', style: 'margin:0' }, '关于扩展'), h('span', { class: 'chev' }, '›')]),
       h('div', { class: 'list-item tappable', onclick: () => setState({ aboutModal: 'privacy' }) }, [h('span', { class: 'set-label', style: 'margin:0' }, '隐私协议'), h('span', { class: 'chev' }, '›')]),
@@ -1336,12 +1409,13 @@ function renderAboutModal() {
     kind === 'source'
       ? [
           h('p', {}, '盯盘助手 · 实时行情盯盘 Chrome 扩展（Manifest V3，零运行时框架）。'),
-          h('p', {}, '行情数据来自腾讯 / 新浪 / 东方财富公开行情接口，多源自动切换；所有数据仅在浏览器本地处理。'),
+          h('p', {}, '股票行情来自腾讯 / 新浪 / 东方财富公开行情接口，币圈行情来自币安 / Coinbase / CoinGecko 公开接口，均多源自动切换；所有数据仅在浏览器本地处理。'),
+          h('p', {}, '币圈涨跌按行业惯例取滚动 24 小时口径，价格以 USDT / USD 计价。'),
         ]
       : [
           h('p', {}, '本扩展不收集、不上传任何个人数据。'),
           h('p', {}, '自选列表、持仓与设置仅保存在浏览器本地存储（chrome.storage.local），导入 / 导出均为本地文件操作。'),
-          h('p', {}, '行情数据请求直接发往腾讯 / 新浪 / 东方财富公开行情接口，不经过任何中间服务器。'),
+          h('p', {}, '行情数据请求直接发往腾讯 / 新浪 / 东方财富 / 币安 / Coinbase / CoinGecko 公开行情接口，不经过任何中间服务器。'),
         ];
   return h('div', { class: 'modal-overlay', onclick: () => setState({ aboutModal: null }) }, [
     h('div', { class: 'modal-card', onclick: (e: Event) => e.stopPropagation() }, [
